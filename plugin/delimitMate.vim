@@ -24,6 +24,11 @@ endif
 let s:loaded_delimitMate = 1
 let delimitMate_version = "2.8"
 
+" Add: auto close, use the enter key to line feed
+let g:AutoPairs = {'(':')', '[':']', '{':'}'}
+let g:AutoPairsCenterLine = 1
+let g:AutoPairsMapCR = 1
+
 "}}}
 
 " Functions: {{{
@@ -166,6 +171,7 @@ function! s:Map() "{{{
     silent! doautocmd <nomodeline> User delimitMate_map
     if s:get('autoclose')
       call s:AutoClose()
+      call s:AutoReturnClose()
     else
       call s:NoAutoClose()
     endif
@@ -362,6 +368,94 @@ endfunction "}}}
 
 "}}}
 
+function! AutoPairsReturn()
+  if b:delimitMate_enabled == 0
+    return ''
+  end
+  let line = getline('.')
+  let pline = getline(line('.')-1)
+  let prev_char = pline[strlen(pline)-1]
+  let cmd = ''
+  let cur_char = line[col('.')-1]
+  if has_key(g:AutoPairs, prev_char) && g:AutoPairs[prev_char] == cur_char
+    if g:AutoPairsCenterLine && winline() * 3 >= winheight(0) * 2
+      " Use \<BS> instead of \<ESC>cl will cause the placeholder deleted
+      " incorrect. because <C-O>zz won't leave Normal mode.
+      " Use \<DEL> is a bit wierd. the character before cursor need to be deleted.
+      let cmd = " \<C-O>zz\<ESC>cl"
+    end
+
+    " If equalprg has been set, then avoid call =
+    " https://github.com/jiangmiao/auto-pairs/issues/24
+    if &equalprg != ''
+      return "\<ESC>O".cmd
+    endif
+
+    " conflict with javascript and coffee
+    " javascript   need   indent new line
+    " coffeescript forbid indent new line
+    if &filetype == 'coffeescript' || &filetype == 'coffee'
+      return "\<ESC>k==o".cmd
+    else
+      return "\<ESC>=ko".cmd
+    endif
+  end
+  return ''
+endfunction
+
+function! s:ExpandMap(map)
+  let map = a:map
+  let map = substitute(map, '\(<Plug>\w\+\)', '\=maparg(submatch(1), "i")', 'g')
+  return map
+endfunction
+
+function! s:AutoReturnClose()
+  if g:AutoPairsMapCR
+    if v:version == 703 && has('patch32') || v:version > 703
+      " VIM 7.3 supports advancer maparg which could get <expr> info
+      " then auto-pairs could remap <CR> in any case.
+      let info = maparg('<CR>', 'i', 0, 1)
+      if empty(info)
+        let old_cr = '<CR>'
+        let is_expr = 0
+      else
+        let old_cr = info['rhs']
+        let old_cr = s:ExpandMap(old_cr)
+        let old_cr = substitute(old_cr, '<SID>', '<SNR>' . info['sid'] . '_', 'g')
+        let is_expr = info['expr']
+        let wrapper_name = '<SID>AutoPairsOldCRWrapper73'
+      endif
+    else
+      " VIM version less than 7.3
+      " the mapping's <expr> info is lost, so guess it is expr or not, it's
+      " not accurate.
+      let old_cr = maparg('<CR>', 'i')
+      if old_cr == ''
+        let old_cr = '<CR>'
+        let is_expr = 0
+      else
+        let old_cr = s:ExpandMap(old_cr)
+        " old_cr contain (, I guess the old cr is in expr mode
+        let is_expr = old_cr =~ '\V(' && toupper(old_cr) !~ '\V<C-R>'
+
+        " The old_cr start with " it must be in expr mode
+        let is_expr = is_expr || old_cr =~ '\v^"'
+        let wrapper_name = '<SID>AutoPairsOldCRWrapper'
+      end
+    end
+
+    if old_cr !~ 'AutoPairsReturn'
+      if is_expr
+        " remap <expr> to `name` to avoid mix expr and non-expr mode
+        execute 'inoremap <buffer> <expr> <script> '. wrapper_name . ' ' . old_cr
+        let old_cr = wrapper_name
+      end
+      " Always silent mapping
+      execute 'inoremap <script> <buffer> <silent> <CR> '.old_cr.'<SID>AutoPairsReturn'
+    end
+  endif
+endfunction
+
 " Commands: {{{
 
 " Let me refresh without re-loading the buffer:
@@ -396,6 +490,10 @@ augroup END
 
 " This is for the default buffer when it does not have a filetype.
 call s:setup()
+
+" Always silent the command
+inoremap <silent> <SID>AutoPairsReturn <C-R>=AutoPairsReturn()<CR>
+imap <script> <Plug>AutoPairsReturn <SID>AutoPairsReturn
 
 let &cpo = save_cpo
 " GetLatestVimScripts: 2754 1 :AutoInstall: delimitMate.vim
